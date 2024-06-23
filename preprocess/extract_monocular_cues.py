@@ -14,6 +14,9 @@ from pathlib import Path
 import glob
 import sys
 
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
+from nerfstudio.utils.rich_utils import ItersPerSecColumn
+
 
 parser = argparse.ArgumentParser(description='Visualize output for depth or surface normals')
 
@@ -29,6 +32,9 @@ parser.set_defaults(task='NONE')
 parser.add_argument('--img_path', dest='img_path', help="path to rgb image")
 parser.set_defaults(im_name='NONE')
 
+parser.add_argument('--scene_id', dest='scene_id', help="scene id")
+parser.set_defaults(scene_id='scene0488_01')
+
 parser.add_argument('--output_path', dest='output_path', help="path to where output image should be stored")
 parser.set_defaults(store_name='NONE')
 
@@ -39,15 +45,16 @@ omnidata_path = args.omnidata_path
 
 sys.path.append(args.omnidata_path)
 print(sys.path)
-from modules.unet import UNet
-from modules.midas.dpt_depth import DPTDepthModel
-from data.transforms import get_transform
+from omni_modules.unet import UNet
+from omni_modules.midas.dpt_depth import DPTDepthModel
+from omni_data.transforms import get_transform
 
 trans_topil = transforms.ToPILImage()
 os.system(f"mkdir -p {args.output_path}")
 map_location = (lambda storage, loc: storage.cuda()) if torch.cuda.is_available() else torch.device('cpu')
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
+H, W = 480, 640
 
 # get target task and model
 if args.task == 'normal':
@@ -132,15 +139,16 @@ def standardize_depth_map(img, mask_valid=None, trunc_value=0.1):
 
 def save_outputs(img_path, output_file_name):
     with torch.no_grad():
-        save_path = os.path.join(args.output_path, f'{output_file_name}_{args.task}.png')
+        save_path = os.path.join(args.output_path, f'{output_file_name}.png')
+        rgb_path = os.path.join(args.output_path, '..', 'rgb', f'{output_file_name}.png')
 
-        print(f'Reading input {img_path} ...')
+        if os.path.exists(save_path):
+            return
+
+        # print(f'Reading input {img_path} ...')
         img = Image.open(img_path)
-
-        img_tensor = trans_totensor(img)[:3].unsqueeze(0).to(device)
-
-        rgb_path = os.path.join(args.output_path, f'{output_file_name}_rgb.png')
         trans_rgb(img).save(rgb_path)
+        img_tensor = trans_totensor(img)[:3].unsqueeze(0).to(device)
 
         if img_tensor.shape[1] == 1:
             img_tensor = img_tensor.repeat_interleave(3,1)
@@ -151,7 +159,7 @@ def save_outputs(img_path, output_file_name):
             #output = F.interpolate(output.unsqueeze(0), (512, 512), mode='bicubic').squeeze(0)
             output = output.clamp(0,1)
             
-            np.save(save_path.replace('.png', '.npy'), output.detach().cpu().numpy()[0])
+            np.save(save_path.replace('.png', '.npy'), output.detach().cpu().numpy().astype(np.float16)[0])
             
             #output = 1 - output
 #             output = standardize_depth_map(output)
@@ -159,18 +167,70 @@ def save_outputs(img_path, output_file_name):
             
         else:
             #import pdb; pdb.set_trace()
-            np.save(save_path.replace('.png', '.npy'), output.detach().cpu().numpy()[0])
+            normal = output.detach().cpu().numpy()[0]
+            np.save(save_path.replace('.png', '.npy'), normal.astype(np.float16))
             trans_topil(output[0]).save(save_path)
             
-        print(f'Writing output {save_path} ...')
+        # print(f'Writing output {save_path} ...')
 
+img_path = os.path.join(args.img_path, args.scene_id, 'color')
+pose_path = os.path.join(args.img_path, args.scene_id, 'pose')
+intrinsic_path = os.path.join(args.img_path, args.scene_id, 'intrinsic')
+args.output_path = os.path.join(args.output_path, args.scene_id, 'MonoSDF', 'omnidata', args.task)
 
-img_path = Path(args.img_path)
-if img_path.is_file():
+if not os.path.exists(args.output_path):
+    os.makedirs(args.output_path)
+
+if not os.path.exists(os.path.join(args.output_path, '..', 'rgb')):
+    os.makedirs(os.path.join(args.output_path, '..', 'rgb'))
+
+if Path(img_path).is_file():
     save_outputs(args.img_path, os.path.splitext(os.path.basename(args.img_path))[0])
-elif img_path.is_dir():
-    for f in glob.glob(args.img_path+'/*'):
-        save_outputs(f, os.path.splitext(os.path.basename(f))[0])
+elif Path(img_path).is_dir():
+    progress = Progress(
+        TextColumn(f":ten_o’clock: Predicting monocular {args.task} :ten_o’clock:"),
+        BarColumn(),
+        TaskProgressColumn(show_speed=True),
+        ItersPerSecColumn(suffix="fps"),
+        TimeRemainingColumn(elapsed_when_finished=True, compact=True),
+    )
+
+    img_file_list = sorted(glob.glob(img_path+'/*'))
+    pose_file_list = sorted(glob.glob(pose_path+'/*'))
+    poses = []
+
+    resize_factor = (image_size * 1.) / H
+    intrinsic = np.loadtxt(os.path.join(intrinsic_path, "intrinsic_color.txt"))
+    intrinsic[:2, :] *= resize_factor
+    intrinsic[0, 2] -= (W * resize_factor - image_size) * 0.5
+
+    with progress:
+        for img_f, pose_f in progress.track(zip(img_file_list, pose_file_list), description=None):
+            base_name = os.path.splitext(os.path.basename(img_f))[0]
+            save_outputs(img_f, base_name)
+            c2w = np.loadtxt(pose_f)
+            poses.append(c2w)
+
+    poses = np.array(poses)
+    min_vertices = poses[:, :3, 3].min(axis=0)
+    max_vertices = poses[:, :3, 3].max(axis=0)
+    center = (min_vertices + max_vertices) / 2.
+    scale = 2. / (np.max(max_vertices - min_vertices) + 3.)
+    # we should normalized to unit cube
+    scale_mat = np.eye(4).astype(np.float32)
+    scale_mat[:3, 3] = -center
+    scale_mat[:3 ] *= scale 
+    scale_mat = np.linalg.inv(scale_mat)
+
+    cameras = {}
+    for i, img_f in enumerate(img_file_list):
+        base_name = os.path.splitext(os.path.basename(img_f))[0]
+        cameras[f"scale_mat_{base_name}"] = scale_mat
+        cameras[f"world_mat_{base_name}"] = intrinsic @ np.linalg.inv(poses[i])
+    
+    np.savez(os.path.join(args.output_path, "..", "cameras.npz"), **cameras)
+
+
 else:
     print("invalid file path!")
     sys.exit()

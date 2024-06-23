@@ -6,6 +6,7 @@ import trimesh
 from PIL import Image
 import matplotlib.pyplot as plt
 import cv2
+import os
 
 from utils import rend_util
 from utils.general import trans_topil
@@ -13,6 +14,10 @@ from utils.general import trans_topil
 
 def plot(implicit_network, indices, plot_data, path, epoch, img_res, plot_nimgs, resolution, grid_boundary,  level=0):
 
+    path = f'{path}/{epoch}'
+    if not os.path.exists(path):
+        os.makedirs(path)
+    
     if plot_data is not None:
         cam_loc, cam_dir = rend_util.get_camera_for_plot(plot_data['pose'])
 

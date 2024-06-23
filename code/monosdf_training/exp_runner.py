@@ -5,7 +5,7 @@ import argparse
 import torch
 
 import os
-from training.monosdf_train import MonoSDFTrainRunner
+from monosdf_training.monosdf_train import MonoSDFTrainRunner
 import datetime
 
 if __name__ == '__main__':
@@ -23,7 +23,7 @@ if __name__ == '__main__':
                         help='The timestamp of the run to be used in case of continuing from a previous run.')
     parser.add_argument('--checkpoint', default='latest', type=str,
                         help='The checkpoint epoch of the run to be used in case of continuing from a previous run.')
-    parser.add_argument('--scan_id', type=int, default=-1, help='If set, taken to be the scan id.')
+    parser.add_argument('--scan_id', type=str, default="scene0488_01", help='If set, taken to be the scan id.')
     parser.add_argument('--cancel_vis', default=False, action="store_true",
                         help='If set, cancel visualization in intermediate epochs.')
     parser.add_argument("--local_rank", type=int, required=True, help='local rank for DistributedDataParallel')
@@ -51,8 +51,8 @@ if __name__ == '__main__':
 
     print(opt.local_rank)
     torch.cuda.set_device(opt.local_rank)
-    torch.distributed.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank, timeout=datetime.timedelta(1, 1800))
-    torch.distributed.barrier()
+    # torch.distributed.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank, timeout=datetime.timedelta(1, 1800))
+    # torch.distributed.barrier()
 
 
     trainrunner = MonoSDFTrainRunner(conf=opt.conf,

@@ -1,0 +1,3 @@
+[submodule "thirdparty/omnidata"]
+	path = thirdparty/omnidata
+	url = https://github.com/EPFL-VILAB/omnidata.git

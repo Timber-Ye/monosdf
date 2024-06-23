@@ -9,6 +9,9 @@ from glob import glob
 import cv2
 import random
 
+import PIL
+from torchvision import transforms
+
 class SceneDataset(torch.utils.data.Dataset):
 
     def __init__(self,
@@ -130,21 +133,21 @@ class SceneDatasetDN(torch.utils.data.Dataset):
 
     def __init__(self,
                  data_dir,
+                 omnidata_dir,
                  img_res,
                  scan_id=0,
                  center_crop_type='xxxx',
                  use_mask=False,
                  num_views=-1
                  ):
-
-        self.instance_dir = os.path.join('../data', data_dir, 'scan{0}'.format(scan_id))
+        self.omnidata_dir = os.path.join(omnidata_dir, scan_id, 'MonoSDF', 'omnidata')
 
         self.total_pixels = img_res[0] * img_res[1]
         self.img_res = img_res
         self.num_views = num_views
         assert num_views in [-1, 3, 6, 9]
         
-        assert os.path.exists(self.instance_dir), "Data directory is empty"
+        assert os.path.exists(self.omnidata_dir), "Data directory is empty"
 
         self.sampling_idx = None
         
@@ -154,64 +157,75 @@ class SceneDatasetDN(torch.utils.data.Dataset):
             data_paths = sorted(data_paths)
             return data_paths
             
-        image_paths = glob_data(os.path.join('{0}'.format(self.instance_dir), "*_rgb.png"))
-        depth_paths = glob_data(os.path.join('{0}'.format(self.instance_dir), "*_depth.npy"))
-        normal_paths = glob_data(os.path.join('{0}'.format(self.instance_dir), "*_normal.npy"))
+        image_paths = glob_data(os.path.join(self.omnidata_dir, "rgb", "*.png"))
+        depth_paths = glob_data(os.path.join(self.omnidata_dir, "depth", "*.npy"))
+        normal_paths = glob_data(os.path.join(self.omnidata_dir, "normal", "*.npy"))
         
         # mask is only used in the replica dataset as some monocular depth predictions have very large error and we ignore it
         if use_mask:
-            mask_paths = glob_data(os.path.join('{0}'.format(self.instance_dir), "*_mask.npy"))
+            mask_paths = glob_data(os.path.join('{0}'.format(self.omnidata_dir), "*_mask.npy"))
         else:
             mask_paths = None
 
         self.n_images = len(image_paths)
         
-        self.cam_file = '{0}/cameras.npz'.format(self.instance_dir)
+        self.cam_file = '{0}/cameras.npz'.format(self.omnidata_dir)
         camera_dict = np.load(self.cam_file)
-        scale_mats = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
-        world_mats = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
+        # scale_mats = [camera_dict['scale_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
+        # world_mats = [camera_dict['world_mat_%d' % idx].astype(np.float32) for idx in range(self.n_images)]
 
         self.intrinsics_all = []
         self.pose_all = []
-        for scale_mat, world_mat in zip(scale_mats, world_mats):
-            P = world_mat @ scale_mat
-            P = P[:3, :4]
-            intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
+        # for scale_mat, world_mat in zip(scale_mats, world_mats):
+        #     P = world_mat @ scale_mat
+        #     P = P[:3, :4]
+        #     intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
 
-            # because we do resize and center crop 384x384 when using omnidata model, we need to adjust the camera intrinsic accordingly
-            if center_crop_type == 'center_crop_for_replica':
-                scale = 384 / 680
-                offset = (1200 - 680 ) * 0.5
-                intrinsics[0, 2] -= offset
-                intrinsics[:2, :] *= scale
-            elif center_crop_type == 'center_crop_for_tnt':
-                scale = 384 / 540
-                offset = (960 - 540) * 0.5
-                intrinsics[0, 2] -= offset
-                intrinsics[:2, :] *= scale
-            elif center_crop_type == 'center_crop_for_dtu':
-                scale = 384 / 1200
-                offset = (1600 - 1200) * 0.5
-                intrinsics[0, 2] -= offset
-                intrinsics[:2, :] *= scale
-            elif center_crop_type == 'padded_for_dtu':
-                scale = 384 / 1200
-                offset = 0
-                intrinsics[0, 2] -= offset
-                intrinsics[:2, :] *= scale
-            elif center_crop_type == 'no_crop':  # for scannet dataset, we already adjust the camera intrinsic duing preprocessing so nothing to be done here
-                pass
-            else:
-                raise NotImplementedError
+        #     # because we do resize and center crop 384x384 when using omnidata model, we need to adjust the camera intrinsic accordingly
+        #     if center_crop_type == 'center_crop_for_replica':
+        #         scale = 384 / 680
+        #         offset = (1200 - 680 ) * 0.5
+        #         intrinsics[0, 2] -= offset
+        #         intrinsics[:2, :] *= scale
+        #     elif center_crop_type == 'center_crop_for_tnt':
+        #         scale = 384 / 540
+        #         offset = (960 - 540) * 0.5
+        #         intrinsics[0, 2] -= offset
+        #         intrinsics[:2, :] *= scale
+        #     elif center_crop_type == 'center_crop_for_dtu':
+        #         scale = 384 / 1200
+        #         offset = (1600 - 1200) * 0.5
+        #         intrinsics[0, 2] -= offset
+        #         intrinsics[:2, :] *= scale
+        #     elif center_crop_type == 'padded_for_dtu':
+        #         scale = 384 / 1200
+        #         offset = 0
+        #         intrinsics[0, 2] -= offset
+        #         intrinsics[:2, :] *= scale
+        #     elif center_crop_type == 'no_crop':  # for scannet dataset, we already adjust the camera intrinsic duing preprocessing so nothing to be done here
+        #         pass
+        #     else:
+        #         raise NotImplementedError
             
-            self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
-            self.pose_all.append(torch.from_numpy(pose).float())
+        #     self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
+        #     self.pose_all.append(torch.from_numpy(pose).float())
 
         self.rgb_images = []
+
         for path in image_paths:
+            base_name = os.path.splitext(os.path.basename(path))[0]
             rgb = rend_util.load_rgb(path)
             rgb = rgb.reshape(3, -1).transpose(1, 0)
             self.rgb_images.append(torch.from_numpy(rgb).float())
+
+            scale_mat = camera_dict[f'scale_mat_{base_name}'].astype(np.float32)
+            world_mat = camera_dict[f'world_mat_{base_name}'].astype(np.float32)
+            P = world_mat @ scale_mat
+            P = P[:3, :4]
+            intrinsics, pose = rend_util.load_K_Rt_from_P(None, P)
+            self.intrinsics_all.append(torch.from_numpy(intrinsics).float())
+            self.pose_all.append(torch.from_numpy(pose).float())
+
             
         self.depth_images = []
         self.normal_images = []

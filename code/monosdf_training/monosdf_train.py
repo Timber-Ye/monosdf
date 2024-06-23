@@ -17,6 +17,9 @@ from utils.general import BackprojectDepth
 
 import torch.distributed as dist
 
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
+from nerfstudio.utils.rich_utils import ItersPerSecColumn
+
 class MonoSDFTrainRunner():
     def __init__(self,**kwargs):
         torch.set_default_dtype(torch.float32)
@@ -28,14 +31,15 @@ class MonoSDFTrainRunner():
         self.exps_folder_name = kwargs['exps_folder_name']
         self.GPU_INDEX = kwargs['gpu_index']
 
-        self.expname = self.conf.get_string('train.expname') + kwargs['expname']
+        # self.expname = self.conf.get_string('train.expname') + kwargs['expname']
         scan_id = kwargs['scan_id'] if kwargs['scan_id'] != -1 else self.conf.get_int('dataset.scan_id', default=-1)
-        if scan_id != -1:
-            self.expname = self.expname + '_{0}'.format(scan_id)
+        # if scan_id != -1:
+        #     self.expname = self.expname + '_{0}'.format(scan_id)
+        self.scene_name = scan_id
 
         if kwargs['is_continue'] and kwargs['timestamp'] == 'latest':
-            if os.path.exists(os.path.join('../',kwargs['exps_folder_name'],self.expname)):
-                timestamps = os.listdir(os.path.join('../',kwargs['exps_folder_name'],self.expname))
+            if os.path.exists(os.path.join(kwargs['exps_folder_name'], self.scene_name)):
+                timestamps = os.listdir(os.path.join(kwargs['exps_folder_name'],self.scene_name))
                 if (len(timestamps)) == 0:
                     is_continue = False
                     timestamp = None
@@ -50,17 +54,17 @@ class MonoSDFTrainRunner():
             is_continue = kwargs['is_continue']
 
         if self.GPU_INDEX == 0:
-            utils.mkdir_ifnotexists(os.path.join('../',self.exps_folder_name))
-            self.expdir = os.path.join('../', self.exps_folder_name, self.expname)
+            utils.mkdir_ifnotexists(self.exps_folder_name)
+            self.expdir = os.path.join(self.exps_folder_name, self.scene_name, 'MonoSDF')
             utils.mkdir_ifnotexists(self.expdir)
-            self.timestamp = '{:%Y_%m_%d_%H_%M_%S}'.format(datetime.now())
-            utils.mkdir_ifnotexists(os.path.join(self.expdir, self.timestamp))
+            # self.timestamp = '{:%Y_%m_%d_%H_%M_%S}'.format(datetime.now())
+            # utils.mkdir_ifnotexists(os.path.join(self.expdir, self.timestamp))
 
-            self.plots_dir = os.path.join(self.expdir, self.timestamp, 'plots')
+            self.plots_dir = os.path.join(self.expdir, 'plots')
             utils.mkdir_ifnotexists(self.plots_dir)
 
             # create checkpoints dirs
-            self.checkpoints_path = os.path.join(self.expdir, self.timestamp, 'checkpoints')
+            self.checkpoints_path = os.path.join(self.expdir, 'checkpoints')
             utils.mkdir_ifnotexists(self.checkpoints_path)
             self.model_params_subdir = "ModelParameters"
             self.optimizer_params_subdir = "OptimizerParameters"
@@ -70,7 +74,7 @@ class MonoSDFTrainRunner():
             utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.optimizer_params_subdir))
             utils.mkdir_ifnotexists(os.path.join(self.checkpoints_path, self.scheduler_params_subdir))
 
-            os.system("""cp -r {0} "{1}" """.format(kwargs['conf'], os.path.join(self.expdir, self.timestamp, 'runconf.conf')))
+            os.system("""cp -r {0} "{1}" """.format(kwargs['conf'], os.path.join(self.expdir, 'runconf.conf')))
 
         # if (not self.GPU_INDEX == 'ignore'):
         #     os.environ["CUDA_VISIBLE_DEVICES"] = '{0}'.format(self.GPU_INDEX)
@@ -88,9 +92,9 @@ class MonoSDFTrainRunner():
         self.max_total_iters = self.conf.get_int('train.max_total_iters', default=200000)
         self.ds_len = len(self.train_dataset)
         print('Finish loading data. Data-set size: {0}'.format(self.ds_len))
-        if scan_id < 24 and scan_id > 0: # BlendedMVS, running for 200k iterations
-            self.nepochs = int(self.max_total_iters / self.ds_len)
-            print('RUNNING FOR {0}'.format(self.nepochs))
+        # if scan_id < 24 and scan_id > 0: # BlendedMVS, running for 200k iterations
+        #     self.nepochs = int(self.max_total_iters / self.ds_len)
+        #     print('RUNNING FOR {0}'.format(self.nepochs))
 
         self.train_dataloader = torch.utils.data.DataLoader(self.train_dataset,
                                                             batch_size=self.batch_size,
@@ -133,13 +137,14 @@ class MonoSDFTrainRunner():
         decay_steps = self.nepochs * len(self.train_dataset)
         self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, decay_rate ** (1./decay_steps))
 
-        self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.GPU_INDEX], broadcast_buffers=False, find_unused_parameters=True)
+        # self.model = torch.nn.parallel.DistributedDataParallel(self.model, device_ids=[self.GPU_INDEX], broadcast_buffers=False, find_unused_parameters=True)
         
         self.do_vis = kwargs['do_vis']
 
         self.start_epoch = 0
         if is_continue:
-            old_checkpnts_dir = os.path.join(self.expdir, timestamp, 'checkpoints')
+            # old_checkpnts_dir = os.path.join(self.expdir, timestamp, 'checkpoints')
+            old_checkpnts_dir  =self.checkpoints_path
 
             saved_model_state = torch.load(
                 os.path.join(old_checkpnts_dir, 'ModelParameters', str(kwargs['checkpoint']) + ".pth"))
@@ -187,104 +192,107 @@ class MonoSDFTrainRunner():
             os.path.join(self.checkpoints_path, self.scheduler_params_subdir, "latest.pth"))
 
     def run(self):
-        print("training...")
+        # print("training...")
         if self.GPU_INDEX == 0 :
             self.writer = SummaryWriter(log_dir=os.path.join(self.plots_dir, 'logs'))
 
         self.iter_step = 0
-        for epoch in range(self.start_epoch, self.nepochs + 1):
 
-            if self.GPU_INDEX == 0 and epoch % self.checkpoint_freq == 0:
-                self.save_checkpoints(epoch)
+        progress = Progress(
+            TextColumn(f":ten_o’clock: self.scene_name training... :ten_o’clock:"),
+            BarColumn(),
+            TaskProgressColumn(show_speed=True),
+            ItersPerSecColumn(suffix="epoch/s"),
+            TimeRemainingColumn(elapsed_when_finished=True, compact=True),
+        )
 
-            if self.GPU_INDEX == 0 and self.do_vis and epoch % self.plot_freq == 0:
-                self.model.eval()
+        with progress:
+            for epoch in progress.track(range(self.start_epoch, self.nepochs + 1), description=None):
 
-                self.train_dataset.change_sampling_idx(-1)
-                
-                #for data_index, (indices, model_input, ground_truth) in enumerate(self.train_dataloader):
+                if self.GPU_INDEX == 0 and epoch % self.checkpoint_freq == 0:
+                    self.save_checkpoints(epoch)
 
-                indices, model_input, ground_truth = next(iter(self.plot_dataloader))
-                model_input["intrinsics"] = model_input["intrinsics"].cuda()
-                model_input["uv"] = model_input["uv"].cuda()
-                model_input['pose'] = model_input['pose'].cuda()
-                
-                split = utils.split_input(model_input, self.total_pixels, n_pixels=self.split_n_pixels)
-                res = []
-                for s in tqdm(split):
-                    out = self.model(s, indices)
-                    d = {'rgb_values': out['rgb_values'].detach(),
-                         'normal_map': out['normal_map'].detach(),
-                         'depth_values': out['depth_values'].detach()}
-                    if 'rgb_un_values' in out:
-                        d['rgb_un_values'] = out['rgb_un_values'].detach()
-                    res.append(d)
+                if self.GPU_INDEX == 0 and self.do_vis and epoch % self.plot_freq == 0:
+                    self.model.eval()
 
-                batch_size = ground_truth['rgb'].shape[0]
-                model_outputs = utils.merge_output(res, self.total_pixels, batch_size)
-                plot_data = self.get_plot_data(model_input, model_outputs, model_input['pose'], ground_truth['rgb'], ground_truth['normal'], ground_truth['depth'])
-
-                plt.plot(self.model.module.implicit_network,
-                        indices,
-                        plot_data,
-                        self.plots_dir,
-                        epoch,
-                        self.img_res,
-                        **self.plot_conf
-                        )
-
-                self.model.train()
-            self.train_dataset.change_sampling_idx(self.num_pixels)
-
-            for data_index, (indices, model_input, ground_truth) in enumerate(self.train_dataloader):
-                model_input["intrinsics"] = model_input["intrinsics"].cuda()
-                model_input["uv"] = model_input["uv"].cuda()
-                model_input['pose'] = model_input['pose'].cuda()
-                
-                self.optimizer.zero_grad()
-                
-                model_outputs = self.model(model_input, indices)
-                
-                loss_output = self.loss(model_outputs, ground_truth)
-                loss = loss_output['loss']
-                loss.backward()
-                self.optimizer.step()
-                
-                psnr = rend_util.get_psnr(model_outputs['rgb_values'],
-                                          ground_truth['rgb'].cuda().reshape(-1,3))
-                
-                self.iter_step += 1                
-                
-                if self.GPU_INDEX == 0:
-                    print(
-                        '{0}_{1} [{2}] ({3}/{4}): loss = {5}, rgb_loss = {6}, eikonal_loss = {7}, psnr = {8}, bete={9}, alpha={10}'
-                            .format(self.expname, self.timestamp, epoch, data_index, self.n_batches, loss.item(),
-                                    loss_output['rgb_loss'].item(),
-                                    loss_output['eikonal_loss'].item(),
-                                    psnr.item(),
-                                    self.model.module.density.get_beta().item(),
-                                    1. / self.model.module.density.get_beta().item()))
+                    self.train_dataset.change_sampling_idx(-1)
                     
-                    self.writer.add_scalar('Loss/loss', loss.item(), self.iter_step)
-                    self.writer.add_scalar('Loss/color_loss', loss_output['rgb_loss'].item(), self.iter_step)
-                    self.writer.add_scalar('Loss/eikonal_loss', loss_output['eikonal_loss'].item(), self.iter_step)
-                    self.writer.add_scalar('Loss/smooth_loss', loss_output['smooth_loss'].item(), self.iter_step)
-                    self.writer.add_scalar('Loss/depth_loss', loss_output['depth_loss'].item(), self.iter_step)
-                    self.writer.add_scalar('Loss/normal_l1_loss', loss_output['normal_l1'].item(), self.iter_step)
-                    self.writer.add_scalar('Loss/normal_cos_loss', loss_output['normal_cos'].item(), self.iter_step)
+                    #for data_index, (indices, model_input, ground_truth) in enumerate(self.train_dataloader):
+
+                    indices, model_input, ground_truth = next(iter(self.plot_dataloader))
+                    model_input["intrinsics"] = model_input["intrinsics"].cuda()
+                    model_input["uv"] = model_input["uv"].cuda()
+                    model_input['pose'] = model_input['pose'].cuda()
                     
-                    self.writer.add_scalar('Statistics/beta', self.model.module.density.get_beta().item(), self.iter_step)
-                    self.writer.add_scalar('Statistics/alpha', 1. / self.model.module.density.get_beta().item(), self.iter_step)
-                    self.writer.add_scalar('Statistics/psnr', psnr.item(), self.iter_step)
-                    
-                    if self.Grid_MLP:
-                        self.writer.add_scalar('Statistics/lr0', self.optimizer.param_groups[0]['lr'], self.iter_step)
-                        self.writer.add_scalar('Statistics/lr1', self.optimizer.param_groups[1]['lr'], self.iter_step)
-                        self.writer.add_scalar('Statistics/lr2', self.optimizer.param_groups[2]['lr'], self.iter_step)
-                
+                    split = utils.split_input(model_input, self.total_pixels, n_pixels=self.split_n_pixels)
+                    res = []
+                    for s in tqdm(split):
+                        out = self.model(s, indices)
+                        d = {'rgb_values': out['rgb_values'].detach(),
+                            'normal_map': out['normal_map'].detach(),
+                            'depth_values': out['depth_values'].detach()}
+                        if 'rgb_un_values' in out:
+                            d['rgb_un_values'] = out['rgb_un_values'].detach()
+                        res.append(d)
+
+                    batch_size = ground_truth['rgb'].shape[0]
+                    model_outputs = utils.merge_output(res, self.total_pixels, batch_size)
+                    plot_data = self.get_plot_data(model_input, model_outputs, model_input['pose'], ground_truth['rgb'], ground_truth['normal'], ground_truth['depth'])
+
+                    plt.plot(self.model.implicit_network,
+                            indices,
+                            plot_data,
+                            self.plots_dir,
+                            epoch,
+                            self.img_res,
+                            **self.plot_conf
+                            )
+
+                    self.model.train()
                 self.train_dataset.change_sampling_idx(self.num_pixels)
-                self.scheduler.step()
 
+                for data_index, (indices, model_input, ground_truth) in enumerate(self.train_dataloader):
+                    model_input["intrinsics"] = model_input["intrinsics"].cuda()
+                    model_input["uv"] = model_input["uv"].cuda()
+                    model_input['pose'] = model_input['pose'].cuda()
+                    
+                    self.optimizer.zero_grad()
+                    
+                    model_outputs = self.model(model_input, indices)
+                    
+                    loss_output = self.loss(model_outputs, ground_truth)
+                    loss = loss_output['loss']
+                    loss.backward()
+                    self.optimizer.step()
+                    
+                    psnr = rend_util.get_psnr(model_outputs['rgb_values'],
+                                            ground_truth['rgb'].cuda().reshape(-1,3))
+                    
+                    self.iter_step += 1                
+                    
+                    if self.GPU_INDEX == 0 and data_index % 50 == 0:
+                        print(f'Epoch {epoch} - [{data_index}/{self.n_batches}]\t loss = {loss.item():.3f}\t rgb_loss = {loss_output["rgb_loss"].item():.3f}\t eikonal_loss = {loss_output["eikonal_loss"].item():.3f}\t psnr = {psnr.item():.3f} \t bete={self.model.density.get_beta().item():.3f}\t alpha={1. / self.model.density.get_beta().item():.3f}')
+                        
+                        self.writer.add_scalar('Loss/loss', loss.item(), self.iter_step)
+                        self.writer.add_scalar('Loss/color_loss', loss_output['rgb_loss'].item(), self.iter_step)
+                        self.writer.add_scalar('Loss/eikonal_loss', loss_output['eikonal_loss'].item(), self.iter_step)
+                        self.writer.add_scalar('Loss/smooth_loss', loss_output['smooth_loss'].item(), self.iter_step)
+                        self.writer.add_scalar('Loss/depth_loss', loss_output['depth_loss'].item(), self.iter_step)
+                        self.writer.add_scalar('Loss/normal_l1_loss', loss_output['normal_l1'].item(), self.iter_step)
+                        self.writer.add_scalar('Loss/normal_cos_loss', loss_output['normal_cos'].item(), self.iter_step)
+                        
+                        self.writer.add_scalar('Statistics/beta', self.model.density.get_beta().item(), self.iter_step)
+                        self.writer.add_scalar('Statistics/alpha', 1. / self.model.density.get_beta().item(), self.iter_step)
+                        self.writer.add_scalar('Statistics/psnr', psnr.item(), self.iter_step)
+                        
+                        if self.Grid_MLP:
+                            self.writer.add_scalar('Statistics/lr0', self.optimizer.param_groups[0]['lr'], self.iter_step)
+                            self.writer.add_scalar('Statistics/lr1', self.optimizer.param_groups[1]['lr'], self.iter_step)
+                            self.writer.add_scalar('Statistics/lr2', self.optimizer.param_groups[2]['lr'], self.iter_step)
+                    
+                    self.train_dataset.change_sampling_idx(self.num_pixels)
+                    self.scheduler.step()
+    
         if self.GPU_INDEX == 0:
             self.save_checkpoints(epoch)
 

@@ -7,7 +7,6 @@ import torch
 import glob
 import os
 import pyrender
-import os
 from tqdm import tqdm
 from pathlib import Path
 
@@ -54,9 +53,6 @@ def evaluate(mesh_pred, mesh_trgt, threshold=.05, down_sample=.02):
         'F-score': fscore,
     }
     return metrics
-
-# hard-coded image size
-H, W = 968, 1296
 
 # load pose
 def load_poses(scan_id):
@@ -108,12 +104,12 @@ class Renderer():
         self.renderer.delete()
         
 
-def refuse(mesh, poses, K):
+def refuse(mesh, poses, K, H, W, voxel_length=0.01):
     renderer = Renderer()
     mesh_opengl = renderer.mesh_opengl(mesh)
     volume = o3d.pipelines.integration.ScalableTSDFVolume(
-        voxel_length=0.01,
-        sdf_trunc=3 * 0.01,
+        voxel_length=voxel_length,
+        sdf_trunc=8 * voxel_length,
         color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8
     )
     
@@ -137,60 +133,63 @@ def refuse(mesh, poses, K):
     return volume.extract_triangle_mesh()
 
 
-root_dir = "../exps/"
-exp_name = "scannet_mlp"
-out_dir = "evaluation/scannet_mlp"
-Path(out_dir).mkdir(parents=True, exist_ok=True)
+if __name__ == "__main__":
+    root_dir = "../exps/"
+    exp_name = "scannet_mlp"
+    out_dir = "evaluation/scannet_mlp"
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    # hard-coded image size
+    H, W = 968, 1296
 
 
-scenes = ["scene0050_00", "scene0084_00", "scene0580_00", "scene0616_00"]
-all_results = []
-for idx, scan in enumerate(scenes):
-    idx = idx + 1
-    cur_exp = f"{exp_name}_{idx}"
-    cur_root = os.path.join(root_dir, cur_exp)
-    # use first timestamps
-    dirs = sorted(os.listdir(cur_root))
-    cur_root = os.path.join(cur_root, dirs[0])
-    files = list(filter(os.path.isfile, glob.glob(os.path.join(cur_root, "plots/*.ply"))))
-    
-    # evalute the latest mesh
-    files.sort(key=lambda x:os.path.getmtime(x))
-    ply_file = files[-1]
-    print(ply_file)
-    
-    mesh = trimesh.load(ply_file)
-    
-    # transform to world coordinate
-    cam_file = f"../data/scannet/scan{idx}/cameras.npz"
-    scale_mat = np.load(cam_file)['scale_mat_0']
-    mesh.vertices = (scale_mat[:3, :3] @ mesh.vertices.T + scale_mat[:3, 3:]).T
-    
-    # load pose and intrinsic for render depth 
-    poses = load_poses(idx)
+    scenes = ["scene0050_00", "scene0084_00", "scene0580_00", "scene0616_00"]
+    all_results = []
+    for idx, scan in enumerate(scenes):
+        idx = idx + 1
+        cur_exp = f"{exp_name}_{idx}"
+        cur_root = os.path.join(root_dir, cur_exp)
+        # use first timestamps
+        dirs = sorted(os.listdir(cur_root))
+        cur_root = os.path.join(cur_root, dirs[0])
+        files = list(filter(os.path.isfile, glob.glob(os.path.join(cur_root, "plots/*.ply"))))
+        
+        # evalute the latest mesh
+        files.sort(key=lambda x:os.path.getmtime(x))
+        ply_file = files[-1]
+        print(ply_file)
+        
+        mesh = trimesh.load(ply_file)
+        
+        # transform to world coordinate
+        cam_file = f"../data/scannet/scan{idx}/cameras.npz"
+        scale_mat = np.load(cam_file)['scale_mat_0']
+        mesh.vertices = (scale_mat[:3, :3] @ mesh.vertices.T + scale_mat[:3, 3:]).T
+        
+        # load pose and intrinsic for render depth 
+        poses = load_poses(idx)
 
-    intrinsic_path = os.path.join(f'../data/scannet/scan{idx}/intrinsic/intrinsic_color.txt')
-    K = np.loadtxt(intrinsic_path)[:3, :3]
-    
-    mesh = refuse(mesh, poses, K)
+        intrinsic_path = os.path.join(f'../data/scannet/scan{idx}/intrinsic/intrinsic_color.txt')
+        K = np.loadtxt(intrinsic_path)[:3, :3]
+        
+        mesh = refuse(mesh, poses, K, H, W)
 
-    # save mesh
-    out_mesh_path = os.path.join(out_dir, f"{exp_name}_scan_{idx}_{scan}.ply")
-    o3d.io.write_triangle_mesh(out_mesh_path, mesh)
-    mesh = trimesh.load(out_mesh_path)
-    
-    
-    #gt_mesh = os.path.join("../data/scannet/GTmesh", f"{scan}_vh_clean_2.ply")
-    gt_mesh = os.path.join("../data/scannet/GTmesh_lowres", f"{scan[5:]}.obj")
-    
-    gt_mesh = trimesh.load(gt_mesh)
-    
-    metrics = evaluate(mesh, gt_mesh)
-    print(metrics)
-    all_results.append(metrics)
-    
-# print all results
-for scan, metric in zip(scenes, all_results):
-    values = [scan] + [str(metric[k]) for k in metric.keys()]
-    out = ",".join(values)
-    print(out)
+        # save mesh
+        out_mesh_path = os.path.join(out_dir, f"{exp_name}_scan_{idx}_{scan}.ply")
+        o3d.io.write_triangle_mesh(out_mesh_path, mesh)
+        mesh = trimesh.load(out_mesh_path)
+        
+        
+        #gt_mesh = os.path.join("../data/scannet/GTmesh", f"{scan}_vh_clean_2.ply")
+        gt_mesh = os.path.join("../data/scannet/GTmesh_lowres", f"{scan[5:]}.obj")
+        
+        gt_mesh = trimesh.load(gt_mesh)
+        
+        metrics = evaluate(mesh, gt_mesh)
+        print(metrics)
+        all_results.append(metrics)
+        
+    # print all results
+    for scan, metric in zip(scenes, all_results):
+        values = [scan] + [str(metric[k]) for k in metric.keys()]
+        out = ",".join(values)
+        print(out)
